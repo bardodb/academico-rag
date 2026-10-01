@@ -4,10 +4,6 @@ Gerador local de trabalhos acadêmicos. A partir de um enunciado e de PDFs de ac
 
 O enunciado define o que resolver. O acervo é a única fonte citável. Busca e redação rodam na máquina, com [Ollama](https://ollama.com) e [Qdrant](https://qdrant.tech).
 
-## English summary
-
-Local RAG that drafts a Brazilian academic paper (Markdown and DOCX) from an assignment brief and PDFs you supply. Qdrant stores one collection per job; Ollama serves `bge-m3` embeddings and `qwen2.5:7b`. The brief sets the tasks and stays out of the bibliography. The model may mark a sentence with a retrieved chunk id; validation rewrites that id as an author–date citation, removes sentences with invented references, and appends a gap report.
-
 ## O que o projeto faz
 
 - Página em `http://127.0.0.1:8000` para enviar título, enunciado, PDFs e orientações, acompanhar o andamento e baixar o resultado.
