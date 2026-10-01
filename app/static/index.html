@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>academico-rag</title>
+  <style>
+    body {
+      margin: 0;
+      color: #222;
+      background: #fff;
+      font: 15px/1.45 "Segoe UI", sans-serif;
+    }
+    main { max-width: 680px; margin: 28px auto 48px; padding: 0 16px; }
+    h1 { font-size: 1.4rem; font-weight: 600; margin: 0 0 6px; }
+    .lead { color: #555; margin: 0 0 18px; }
+    form, .result { border: 1px solid #ccc; padding: 14px 16px; }
+    .banner { margin: 0 0 12px; padding: 8px 10px; background: #fff6e8; border: 1px solid #e2c48a; }
+    .hidden { display: none; }
+    label { display: block; margin: 12px 0 4px; }
+    input[type="text"], textarea, input[type="file"] {
+      width: 100%;
+      border: 1px solid #bbb;
+      font: inherit;
+      padding: 6px 8px;
+    }
+    textarea { min-height: 120px; }
+    button { margin-top: 14px; font: inherit; padding: 6px 14px; }
+    button:disabled { opacity: 0.6; }
+    .status { margin-top: 12px; color: #555; }
+    .hint { margin: 4px 0 0; color: #666; font-size: 0.9rem; }
+    .result { margin-top: 16px; }
+    .downloads { display: flex; gap: 16px; margin: 8px 0 14px; }
+    pre { white-space: pre-wrap; font-family: Consolas, monospace; font-size: 13px; margin: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>academico-rag</h1>
+    <p class="lead">Enunciado vira as tarefas. Os PDFs do acervo é que podem ser citados. O que for cortado aparece no relatório de lacunas.</p>
+    <p id="health" class="banner hidden"></p>
+    <form id="job-form">
+      <label for="theme">Título</label>
+      <input id="theme" name="theme" type="text" required>
+      <label for="brief">Enunciado (PDF)</label>
+      <input id="brief" name="brief" type="file" accept="application/pdf,.pdf">
+      <p class="hint">Precisa ter cabeçalhos tipo “Passo 1:”. Sem o PDF, cole o texto abaixo.</p>
+      <label for="brief_text">Enunciado em texto</label>
+      <textarea id="brief_text" name="brief_text"></textarea>
+      <label for="files">Acervo (PDFs)</label>
+      <input id="files" name="files" type="file" accept="application/pdf,.pdf" multiple>
+      <p class="hint">Nome do arquivo: <code>AUTOR,AUTOR_ANO_Titulo.pdf</code></p>
+      <label for="norms">Orientações de forma</label>
+      <textarea id="norms" name="norms"></textarea>
+      <button id="submit" type="submit">Gerar</button>
+      <p id="status" class="status" aria-live="polite"></p>
+    </form>
+    <section id="result" class="result hidden">
+      <h2 id="paper-title"></h2>
+      <div class="downloads">
+        <a id="download-md" href="#">Markdown</a>
+        <a id="download-docx" href="#">DOCX</a>
+      </div>
+      <h3>Lacunas</h3>
+      <ul id="gaps"></ul>
+      <h3>Texto</h3>
+      <pre id="preview"></pre>
+    </section>
+  </main>
+  <script>
+    const form = document.querySelector("#job-form");
+    const statusNode = document.querySelector("#status");
+    const submit = document.querySelector("#submit");
+    const result = document.querySelector("#result");
+    const health = document.querySelector("#health");
+
+    async function refreshHealth() {
+      try {
+        const response = await fetch("/api/health");
+        const data = await response.json();
+        const problems = [];
+        if (!data.ollama) problems.push("Ollama parado");
+        if (!data.qdrant) problems.push("Qdrant parado");
+        if (data.ollama && !data.embed_model) problems.push("modelo bge-m3 ausente");
+        if (data.ollama && !data.chat_model) problems.push("modelo qwen2.5:7b ausente");
+        health.classList.toggle("hidden", problems.length === 0);
+        health.textContent = problems.length ? `Antes de gerar: ${problems.join(", ")}.` : "";
+      } catch (_error) {
+        health.classList.remove("hidden");
+        health.textContent = "Não consegui falar com o serviço.";
+      }
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      result.classList.add("hidden");
+      submit.disabled = true;
+      statusNode.textContent = "Enviando…";
+      try {
+        const data = new FormData(form);
+        for (const key of ["brief", "files"]) {
+          const kept = data.getAll(key).filter((file) => file instanceof File && file.name);
+          data.delete(key);
+          kept.forEach((file) => data.append(key, file));
+        }
+        const response = await fetch("/api/jobs", { method: "POST", body: data });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "Não foi possível iniciar.");
+        await watch(payload.id);
+      } catch (error) {
+        statusNode.textContent = error.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    async function watch(id) {
+      while (true) {
+        const response = await fetch(`/api/jobs/${id}`);
+        const job = await response.json();
+        const step = job.sections_total ? ` (${job.sections_done}/${job.sections_total})` : "";
+        statusNode.textContent = `${job.detail}${step}`;
+        if (job.status === "done") {
+          show(id, job);
+          return;
+        }
+        if (job.status === "error") {
+          throw new Error(job.error || job.detail);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+
+    function show(id, job) {
+      result.classList.remove("hidden");
+      document.querySelector("#paper-title").textContent = job.title;
+      document.querySelector("#preview").textContent = job.preview || "";
+      const gaps = document.querySelector("#gaps");
+      gaps.replaceChildren();
+      for (const gap of job.gaps.length ? job.gaps : ["Nenhuma lacuna registrada."]) {
+        const item = document.createElement("li");
+        item.textContent = gap;
+        gaps.appendChild(item);
+      }
+      document.querySelector("#download-md").href = `/api/jobs/${id}/trabalho.md`;
+      document.querySelector("#download-docx").href = `/api/jobs/${id}/trabalho.docx`;
+    }
+
+    refreshHealth();
+  </script>
+</body>
+</html>
